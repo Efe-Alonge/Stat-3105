@@ -1,0 +1,611 @@
+---
+title: "Full Project 2"
+author: "Efe Alonge"
+date: "11/11/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(jsonlite)
+library(tidyverse)
+library(magrittr)
+#Zoo is for manipulating time and date data
+library(zoo)
+
+```
+
+```{r}
+#CHANGE FILE PATH FOR THE “files_vec” AS NEEDED 
+#SEE “Prediction Algorithm” SECTION FOR PREDICTION FORMULA 
+
+
+#According to Google Maps, the location of the of coordinates is Missoula, MT
+#Weather for Missoula on these dates taken from https://www.accuweather.com/ 
+
+#naming temp vec w/ dates they correspond to:
+
+temp_vec<-c(96,98,82,94,85,93,83,75,87,87,86,88,78,58)
+names(temp_vec)<-{as.Date(c("2020-08-18",
+                            "2020-08-19",
+                            "2020-08-20",
+                            "2020-08-21",
+                            "2020-08-22",
+                            "2020-08-23",
+                            "2020-08-24",
+                            "2020-08-25",
+                            "2020-08-26",
+                            "2020-08-27",
+                            "2020-08-28",
+                            "2020-08-29",
+                            "2020-08-30",
+                            "2020-08-31"))}
+
+files_vec<-paste0("/Users/efealonge/Desktop/Applied Statistical Methods Files/gps/",list.files("/Users/efealonge/Desktop/Applied Statistical Methods Files/gps")) #creates list of each file name w/ its path
+
+read_proj_files<-function(file) {
+    dat <- read_json(file) %>% unlist(., use.names = FALSE) #read in each file, unlist into vector, get rid of names 
+    ind_lat<-grepl("^-\\d{3}\\.\\d*", c(unlist(dat, use.names = FALSE))) #finding latitude: at start of string, look for negative sign, followed by 3 digits, double escape ("\\") to find decimal point, followed by any number of digits
+    #returns true/false vector regarding string matches 
+    ind_lon<-ind_lat %>% lag(., default = FALSE) #lag function takes element after latitude, which is longitude
+    
+    time<-dat[grepl("\\d{4}-\\d{2}-\\d{2}\\D\\d{2}:\\d{2}:\\d{2}\\.\\d{3}\\D", dat)] #finding time: pull matches from data for a pattern of 4 digits, a dash,  2 digits,  a dash, 2 digits, a letter, 2 digits, a colon, 2 digits, a colon, 2 digits, a decimal point, 3 digits, then a letter
+    lat<-dat[ind_lat] %>% as.numeric() #select matches from data for pattern indicating latitude
+    lon<-dat[ind_lon] %>% as.numeric() #select matches from data that indicate longitude  
+    
+    
+    dat_df<-data.frame(
+        timestamp=time,
+        lat=lat,
+        long=lon,#combining previously defined vectors as columns in data frame 
+        day=time %>% substr(1,10) %>% as.Date(.) %>% weekdays(.), #extract 1st 10 chars, convert to date, return weekday
+        date=time %>% substr(1,10),  #extract 1st 10 characters from timestamp, which is the date,
+        time=time %>% substr(1,19) %>% gsub("[A-Z]",":",.) %>% as.POSIXlt(., format="%Y-%m-%d:%H:%M:%S") %>% as.numeric(.), #gsub replaces all letters in timestamp with colons  #as.POSIXlt is a function from base r that converts character strings to a list of attributes of date + time. as.numeric() allows calculations to be performed on this output.
+        stringsAsFactors = FALSE) %>% 
+        mutate(.,
+               time_read=as.POSIXct(.$time, format="%Y-%m-%d:%H:%M:%S", origin=as.Date(0)), #time_read converts "time" column to human readable format
+               lat_diff=.$lat-lag(.$lat), #tracking change in lat from last gps datapoint
+               long_diff=.$long-lag(.$long)) %>%  #lat_diff/long_diff calculates difference from previous entry
+        mutate(., 
+               time_diff=abs(.$time_read-lag(.$time_read)), #calculating time since last gps data point
+               max_temp=temp_vec[.$date]) #add max temperature for given date by referencing temp_vec temperature date by date
+    return(dat_df)
+}
+
+
+full_df<-lapply(files_vec, read_proj_files) %>% bind_rows(.) #apply across all files and combine into one df
+
+
+#plot code
+full_df %>%
+    filter(lat >= -114.001 & lat <= -113.983) %>%
+    ggplot() +
+    aes(x = lat, y = long, colour = date) +
+    geom_point(size = 1L) +
+    scale_color_hue() +
+    theme_minimal()
+
+```
+
+
+# Kalman filter applied to latitude
+
+```{r}
+sd(full_df$lat)^2
+```
+
+```{r}
+# Getting optimized inputs 
+
+obj <- function(x){
+    dlm(
+      FF=matrix(c(0, 1, 0), ncol=3),
+      GG=matrix(c(1, 0, 0, 0, x[1], x[2], 0, 1, 0), ncol=3, byrow=TRUE),
+      V=matrix(exp(x[3]), ncol=1),
+      W=matrix(c(0, 0, 0, 0, exp(x[4]), 0, 0, 0, exp(x[5])), ncol=3),
+      m0=matrix(c(1, -114.0003, 0), ncol=1),
+      C0=diag(c(100, 100, 100)))
+    }
+
+x <- c(1, 0, 5.160906e-05, 2, 2)
+
+opt_out <- dlmMLE(full_df$lat, par=x, build=obj)
+
+```
+
+
+```{r}
+#running kalman filter with optimized inputs 
+kfilt <- dlmFilter(full_df$lat, obj(opt_out$par))
+```
+
+```{r}
+#plotting residuals of kalman filter
+residual <- full_df$lat - kfilt$m[-1, 2]
+plot(tail(residual, 100), type="l")
+```
+```{r}
+full_df <- full_df %>% mutate(lat_kfilt = kfilt$m[-1, 2])
+
+full_df <- full_df%>% mutate (lat_residual=residual)
+
+```
+
+
+
+```{r}
+#Find when latitude residuals are smallest (between 1e-06 and -1e-06)
+length (full_df$lat_residual[full_df$lat_residual<=1e-06 & full_df$lat_residual>=-1e-06])
+
+full_df$lat_residual[full_df$lat_residual<=1e-06 & full_df$lat_residual>=-1e-06]
+
+lat_resid_point_df <- full_df[full_df$lat_residual<=1e-06 & full_df$lat_residual>=-1e-06 ,]
+
+full_df %>%
+    filter(lat >= -114.001 & lat <= -113.983) %>%
+    ggplot() +
+    aes(x = lat, y = long) +
+    geom_point(size = 1L) +
+    scale_color_hue() +
+    theme_minimal()+
+    geom_point(data=lat_resid_point_df, 
+             aes(x=lat,y=long), 
+             color='purple',
+             size=3)
+
+```
+
+
+
+
+# Kalman filter applied to longitude
+
+```{r}
+sd(full_df$long)^2
+```
+
+```{r}
+# Getting optimized inputs 
+
+obj <- function(x){
+    dlm(
+      FF=matrix(c(0, 1, 0), ncol=3),
+      GG=matrix(c(1, 0, 0, 0, x[1], x[2], 0, 1, 0), ncol=3, byrow=TRUE),
+      V=matrix(exp(x[3]), ncol=1),
+      W=matrix(c(0, 0, 0, 0, exp(x[4]), 0, 0, 0, exp(x[5])), ncol=3),
+      m0=matrix(c(1, -114.0003, 0), ncol=1),
+      C0=diag(c(100, 100, 100)))
+    }
+
+x <- c(1, 0, 7.160386e-05, 2, 2)
+
+opt_out <- dlmMLE(full_df$long, par=x, build=obj) 
+
+```
+
+
+```{r}
+#running kalman filter with optimized inputs 
+kfilt <- dlmFilter(full_df$long, obj(opt_out$par))
+```
+
+```{r}
+#plotting residuals of kalman filter
+residual <- full_df$long - kfilt$m[-1, 2]
+plot(tail(residual, 100), type="l")
+```
+
+```{r}
+full_df <- full_df %>% mutate(long_kfilt = kfilt$m[-1, 2])
+full_df <- full_df%>% mutate (long_residual=residual)
+```
+
+```{r}
+#Find when latitude residuals are smallest (between 1e-05  and -1e-05)
+
+length (full_df$long_residual[full_df$long_residual<=1e-05 & full_df$long_residual>=-1e-05])
+
+full_df$long_residual[full_df$long_residual<=1e-05 & full_df$long_residual>=-1e-05]
+
+long_resid_point_df <- full_df[full_df$long_residual<=1e-05 & full_df$long_residual>=-1e-05 ,]
+
+full_df %>%
+    filter(lat >= -114.001 & lat <= -113.983) %>%
+    ggplot() +
+    aes(x = lat, y = long) +
+    geom_point(size = 1L) +
+    scale_color_hue() +
+    xlim( -114.000, -113.985)+
+    ylim(46.86, 46.88)+
+    theme_minimal()+
+    geom_point(data=long_resid_point_df, 
+             aes(x=lat,y=long), 
+             color='green',
+             size=3)
+
+
+```
+
+
+
+```{r}
+#Choosing time to bomb 
+
+## Points where both long and lat residuals were minimal
+long_resid_points <- subset(long_resid_point_df, select = 2:3 )
+lat_resid_points <- subset(lat_resid_point_df, select = 2:3 )
+
+small_res <- inner_join(long_resid_point_df, lat_resid_point_df)
+str(small_res)
+
+
+
+full_df %>%
+    filter(lat >= -114.001 & lat <= -113.983) %>%
+    ggplot() +
+    aes(x = lat, y = long) +
+    geom_point(size = 1L) +
+    scale_color_hue() +
+    theme_minimal()+
+    geom_point(data=small_res, 
+             aes(x=lat,y=long), 
+             color='blue',
+             size=3)
+```
+
+```{r}
+full_df_safe <- full_df %>% 
+    filter(., abs(lat_diff) < .001,
+           abs(long_diff)<.001) %>% 
+    mutate(safe_time_diff = .$time_diff +lag(.$time_diff))
+
+
+
+#pulls points with sufficiently small distances between them and the their previous points
+
+df_safe <- subset(full_df_safe, select = 1:3 )
+
+small_res_safe<-subset(small_res, select = 1:3 )
+
+  
+
+#If point from small_res (data set where residuals are tiny) is in full_df_safe, check manually in full_df to see if the target was stationary for 2 minutes 
+
+full_df_safe %>%
+    filter(lat >= -114.001 & lat <= -113.983) %>%
+    ggplot() +
+    aes(x = lat, y = long) +
+    geom_point(size = 1L) +
+    scale_color_hue() +
+    theme_minimal()+
+    geom_point(data=small_res, 
+             aes(x=lat,y=long), 
+             color='blue',
+             size=3)
+
+attempt_time <- inner_join(small_res_safe, df_safe, by =c("lat", "long"))
+
+attempt_time 
+small_res
+
+#I am choosing to make attempts at 23:27:55, on Friday, at the location given by the coordinates (-113.9877, 46.86885), and at 20:02:21	on Wednesday at the location of the coordinates(-113.9893, 46.86502).
+
+```
+# Prediction Algorithm 
+
+```{r}
+#predicting longitude from length of trip time 
+
+## Breaking data up to get trip time (time since departure)
+
+
+partial_df <- subset(full_df, select = c(1,2,3,4,5,6,7,11,12,13,14))
+
+day_1  <- partial_df %>% filter(.,.$date == "2020-08-18") %>% arrange(., .$time) %>% mutate(trip_time = .$time-.$time[1])
+
+day_2 <- partial_df%>% filter(.,.$date == "2020-08-19") %>%  arrange(., .$time) %>% mutate(trip_time = .$time-.$time[1])
+
+day_3 <- partial_df%>% filter(.,.$date == "2020-08-20") %>% arrange(., .$time) %>% mutate(trip_time = .$time-.$time[1])
+
+day_4 <- partial_df%>% filter(.,.$date == "2020-08-21") %>% arrange(., .$time) %>% mutate(trip_time = .$time-.$time[1])
+
+day_5 <- partial_df%>% filter(.,.$date == "2020-08-22") %>% arrange(., .$time) %>% mutate(trip_time = .$time-.$time[1])
+
+day_6 <- partial_df%>% filter(.,.$date == "2020-08-24") %>% arrange(., .$time) %>% mutate(trip_time = .$time-.$time[1])
+
+day_7 <- partial_df%>% filter(.,.$date == "2020-08-25") %>% arrange(., .$time) %>% mutate(trip_time = .$time-.$time[1])
+
+day_8 <- partial_df%>% filter(.,.$date == "2020-08-26") %>% arrange(., .$time) %>% mutate(trip_time = .$time-.$time[1])
+
+day_9 <- partial_df%>% filter(.,.$date == "2020-08-27") %>% arrange(., .$time) %>% mutate(trip_time = .$time-.$time[1])
+
+day_10 <- partial_df%>% filter(.,.$date == "2020-08-28") %>% arrange(., .$time) %>% mutate(trip_time = .$time-.$time[1])
+
+day_11 <- partial_df%>% filter(.,.$date == "2020-08-31") %>% arrange(., .$time) %>% mutate(trip_time = .$time-.$time[1])
+
+#Recombining back into a large data frame
+trip_time_df<- do.call("rbind", list(day_1, day_2, day_3, day_4, day_5, day_6, day_7, day_8, day_9, day_10, day_11))
+
+```
+
+
+```{r}
+#Function for predicting longitude from length of trip time 
+#Takes in time from start of trip in seconds and gives location prediction
+
+#Bombing attempt instructions: My first attempt will take place at 20:02:21. To execute this attempt, calculate the change in time (in seconds) between the time stamp of the starting point of the given data to 20:02:21, and use this time difference as the input for the "pred_func" formula. My second attempt will take place at 23:27:55, so repeat the process with this second time. 
+
+
+pred_func <- function (x){
+  ols_lat<- lm(trip_time_df$lat_kfilt ~ trip_time_df$trip_time)
+  pred.x <- data.frame(c(rep(x, times = 5857)))
+  lat_pred<-predict(ols_lat, pred.x)
+  
+  
+  ols_long<- lm(trip_time_df$long_kfilt ~ trip_time_df$trip_time)
+  pred.x <- data.frame(c(rep(x, times = 5857)))
+  long_pred<-predict(ols_long, pred.x)
+  
+  print(c(lat_pred[1], long_pred[1]))
+}
+```
+
+# Visualizing Uncertainty 
+```{r}
+
+
+
+plot((lat_pred-trip_time_df$lat)~trip_time_df$trip_time, type="l")
+abline(v=c(17962,2607 ), col="purple")
+
+  pred.x <- data.frame(c(rep(x, times = 5857)))
+  long_pred<-predict(ols_long, pred.x)
+
+plot((long_pred-trip_time_df$long)~trip_time_df$trip_time, type="l")
+abline(v=c(17962,2607 ), col="purple")
+#xlim = c(1000,3000)
+
+
+trip_time_df[trip_time_df$timestamp =="2020-08-28T23:27:55.047Z",]
+
+trip_time_df[trip_time_df$timestamp =="2020-08-26T20:02:21.981Z",]
+
+#The purple lines correspond to the times since the start of any given trip that I plan to make my attempt at. They were selected for having both residuals close to zero and for not having other points clustered tightly around them in the training data, as they would if the target were stationary. Although it is a bit easier to see when individual points are plotted, as per the instructions I have plotted lines instead, yet even so, one can see that the purple lines are located near  plotted values clustered around zero, meaning that the predication has the least amount of unexplained variance. 
+
+```
+
+```{r}
+##Getting length of each trip for velocity calculation
+
+##Length of trip
+day_1$trip_time[length(day_1$trip_time)]
+day_2$trip_time[length(day_2$trip_time)]
+day_3$trip_time[length(day_3$trip_time)]
+day_4$trip_time[length(day_4$trip_time)]
+day_5$trip_time[length(day_5$trip_time)]
+day_6$trip_time[length(day_6$trip_time)]
+day_7$trip_time[length(day_7$trip_time)]
+day_8$trip_time[length(day_8$trip_time)]
+day_9$trip_time[length(day_9$trip_time)]
+day_10$trip_time[length(day_10$trip_time)]
+day_11$trip_time[length(day_11$trip_time)]
+
+
+
+```
+
+
+#Speed and Temperature Analysis 
+```{r}
+
+#Getting Distance of each trip for velocity calculation 
+#Matrices for getting distances in meters via rdist.earth() from fields packagecalculated in Jupyter (because the package works better in that environment)
+
+#day 1
+length(day_1) 
+day_1$long[1] 
+day_1$lat [1] 
+
+day_1$long[90] 
+day_1$lat [90] 
+
+a<- matrix(c(46.88678, -114.0003), nrow= 1, ncol=2, byrow=TRUE)
+b<- matrix(c(46.88604, -113.9999), nrow= 1, ncol=2, byrow=TRUE)
+#rdist.earth(a, b, miles = FALSE) = 0.05572781
+
+#day 2
+length(day_2) 
+day_2$long[1] 
+day_2$lat [1] 
+
+day_2$long[11] 
+day_2$lat [11] 
+
+c<- matrix(c(46.88703, -114.0005), nrow= 1, ncol=2, byrow=TRUE)
+d<- matrix(c(46.88533, -113.9971), nrow= 1, ncol=2, byrow=TRUE)
+#rdist.earth(c, d, miles = FALSE) = 0.3862483
+
+#day 3
+length(day_3) 
+day_3$long[1] 
+day_3$lat [1] 
+
+day_3$long[11] 
+day_3$lat [11] 
+
+e<- matrix(c(46.88314, -113.9976), nrow= 1, ncol=2, byrow=TRUE)
+f<- matrix(c(46.88606, -113.9981), nrow= 1, ncol=2, byrow=TRUE)
+#rdist.earth(e, f, miles = FALSE) = 0.1434448
+
+#day 4
+length(day_4) 
+day_4$long[1] 
+day_4$lat [1] 
+
+day_4$long[11] 
+day_4$lat [11] 
+
+g<- matrix(c(46.85991, -113.9853), nrow= 1, ncol=2, byrow=TRUE)
+h<- matrix(c(46.86157, -113.9855), nrow= 1, ncol=2, byrow=TRUE)
+#rdist.earth(g, h, miles = FALSE) = 0.07835096
+
+
+#day 5
+length(day_5) 
+day_5$long[1] 
+day_5$lat [1] 
+
+day_5$long[11] 
+day_5$lat [11] 
+
+i<- matrix(c(46.87198, -113.9925), nrow= 1, ncol=2, byrow=TRUE)
+j<- matrix(c(46.87325, -113.9929), nrow= 1, ncol=2, byrow=TRUE)
+#rdist.earth(i, j, miles = FALSE) = 0.07271724
+
+#day 6
+length(day_6) 
+day_6$long[1] 
+day_6$lat [1] 
+
+day_6$long[11] 
+day_6$lat [11] 
+
+k<- matrix(c(46.87198, -114.0005), nrow= 1, ncol=2, byrow=TRUE)
+l<- matrix(c(46.87325, -114.0001), nrow= 1, ncol=2, byrow=TRUE)
+#rdist.earth(k, l, miles = FALSE) = 0.07273084
+
+#day 7
+length(day_7) 
+day_7$long[1] 
+day_7$lat [1] 
+
+day_7$long[11] 
+day_7$lat [11] 
+
+m<- matrix(c(46.8875, -114.0001), nrow= 1, ncol=2, byrow=TRUE)
+n<- matrix(c(46.8863, -114.0001), nrow= 1, ncol=2, byrow=TRUE)
+#rdist.earth(m, n, miles = FALSE) = 0.05433555
+
+#day 8
+length(day_8) 
+day_8$long[1] 
+day_8$lat [1] 
+
+day_8$long[11] 
+day_8$lat [11] 
+
+o<- matrix(c(46.88751, -114.0002), nrow= 1, ncol=2, byrow=TRUE)
+p<- matrix(c(46.88662, -114.0006), nrow= 1, ncol=2, byrow=TRUE)
+#rdist.earth(o, p, miles = FALSE) = 0.06005756
+
+#day 9
+length(day_9) 
+day_9$long[1] 
+day_9$lat [1] 
+
+day_9$long[11] 
+day_9$lat [11] 
+
+q<- matrix(c(46.86749, -113.9876), nrow= 1, ncol=2, byrow=TRUE)
+r<- matrix(c(46.86833, -113.9876), nrow= 1, ncol=2, byrow=TRUE)
+#rdist.earth(q, r, miles = FALSE) = 0.03801625
+
+#day 10
+length(day_10) 
+day_10$long[1] 
+day_10$lat [1] 
+
+day_10$long[11] 
+day_10$lat [11] 
+
+s<- matrix(c(46.88747, -114.0001), nrow= 1, ncol=2, byrow=TRUE)
+t<- matrix(c(46.88665, -114.0001), nrow= 1, ncol=2, byrow=TRUE)
+#rdist.earth(s, t, miles = FALSE) = 0.03712931
+
+#day 11
+length(day_11) 
+day_11$long[1] 
+day_11$lat [1] 
+
+day_11$long[11] 
+day_11$lat [11] 
+
+u<- matrix(c(46.88749, -114.0003), nrow= 1, ncol=2, byrow=TRUE)
+v<- matrix(c(46.88626, -114.0002), nrow= 1, ncol=2, byrow=TRUE)
+#rdist.earth(u, v, miles = FALSE) = 0.05679596
+
+```
+
+```{r}
+#Velocity in km/s
+
+##Day 1
+0.05572781/15394
+
+##Day 2
+0.3862483/16312
+
+##Day 3
+0.1434448/79393
+
+##Day 4
+0.07835096/84932
+
+##Day 5
+0.07271724/1488
+
+##Day 6
+0.07273084/16055
+
+##Day 7
+0.05433555/14486
+
+##Day 8
+0.06005756/16865
+
+##Day 9
+0.03801625/83390
+
+##Day 10
+0.03712931/19839
+
+##Day 11
+0.05679596/17720
+
+
+```
+
+
+```{r}
+#Combine velocity with temp data
+
+
+z <- c(0.05572781/15394, 0.3862483/16312, 0.1434448/79393,0.07835096/84932,0.07271724/1488, 0.07273084/16055, 0.05433555/14486, 0.06005756/16865, 0.03801625/83390, 0.03712931/19839,0.05679596/17720) #converts velocity to meters/second
+
+vel_vec <- data.frame ("temp"= unname(temp_vec), "date"=names(temp_vec))
+
+vel_vec <- vel_vec [-c(6, 12, 13),]
+
+vel_vec <- data.frame( "date" = vel_vec$date, "temp" = vel_vec$temp, "velocity"=
+
+z*1000)
+vel_vec
+
+
+
+```
+
+```{r}
+plot(velocity ~ temp, data=vel_vec)
+abline(lm(velocity ~ temp, data=vel_vec), col = "purple")
+summary(lm(velocity ~ temp, data=vel_vec))
+
+#Walking speed does not significantly change with temperature. According to the simple linear regression model, there is a 0.0002149 increase in walking speed (meters per second) with every one unit increase in temperature in Fahrenheit. This regression has an R squared value of 0.02581, meaning that only about 2.58% of the walking speed’s variance can be explained by the temperature, which is not a significant relationship.
+
+```
+
+
+
