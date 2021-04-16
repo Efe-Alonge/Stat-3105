@@ -1,0 +1,123 @@
+---
+title: "Methods Final Project"
+author: "Efe Alonge"
+date: "12/7/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library (dplyr)
+library(readxl)
+```
+
+```{r}
+#Uploading the data
+data <- read_excel("/Users/efealonge/Desktop/Applied Statistical Methods Files/Final_Project.xlsx")
+
+#Merging the pollnig data with the previous dataset
+poll.data <- read_excel("/Users/efealonge/Desktop/Applied Statistical Methods Files/Polling Locations.xlsx")
+data<-merge(data,poll.data,by="state", all=TRUE)
+```
+
+
+```{r}
+#data processing
+data <- data %>% mutate (diff.turnout = turnout.20 - turnout.16)
+
+data <-  data%>% mutate (ballot.score = ifelse(data$univ.ballot.sent==1, 4, 
+                                        ifelse(data$univ.app==1, 3, 
+                                        ifelse(data$no.excuse==1, 2, 
+                                        ifelse(data$covid.excuse==1, 1, 0))
+                                     )))
+
+
+
+data <-  data%>% mutate (id.score.16 = ifelse(data$no.doc.16==1, 5, 
+                                       ifelse(data$non.stric.non.pho.16==1, 4, 
+                                       ifelse(data$non.stric.pho.16==1, 3, 
+                                       ifelse(data$stric.non.pho.16==1, 2, 
+                                       ifelse(data$stric.pho.16==1, 1,         
+                                              NA))
+                                 ))))
+
+
+data <-  data%>% mutate (id.score.20 = ifelse(data$no.doc.20==1, 5, 
+                                       ifelse(data$non.stric.non.pho.20==1, 4, 
+                                       ifelse(data$non.stric.pho.20==1, 3, 
+                                       ifelse(data$stric.non.pho.20==1, 2, 
+                                       ifelse(data$stric.pho.20==1, 1,         
+                                              NA))
+                                 ))))
+
+data <- data %>% mutate (diff.id.score = id.score.20 - id.score.16)
+
+data <- data %>% mutate (result.16 = as.factor(data$result.16))
+
+data <- data %>% mutate (result.20 = as.factor(data$result.20))
+
+data <- data %>% mutate (result.16.binary = ifelse(data$result.16=="Rep", 0,1))
+
+data <- data %>% mutate (result.20.binary = ifelse(data$result.20=="Rep", 0,1))
+
+data <- data %>% mutate (diff.result = result.20.binary - result.16.binary)
+
+data <- data %>% mutate (spending.per.pupil.16 = as.integer(spending.per.pupil.16))
+
+data <- data %>% mutate (spending.per.pupil.20 = as.integer(spending.per.pupil.20))
+
+data <- data %>% mutate (diff.spending.per.pupil= spending.per.pupil.20 - spending.per.pupil.16)
+
+data <- data %>% mutate (polls.2016 = as.integer(polls.2016))
+
+data <- data %>% mutate (polls.2018 = as.integer(polls.2018))
+
+data <- data %>% mutate (polls.per.cap.2016 = polls.2016 / population.2016)
+
+data <- data %>% mutate (polls.per.cap.2018 = polls.2018 / population.2018)
+
+data <- data %>% mutate (diff.polls.per.cap= polls.per.cap.2018 - polls.per.cap.2016)
+
+```
+
+
+```{r}
+#Change in voter turnout regressed on COVID accommodations
+model <- lm(diff.turnout~ballot.score, data=data)
+
+plot (data$diff.turnout ~ data$ballot.score, xlab= "Degree of COVID Voting Accommodation", ylab="Percent Difference In Voter Turnout Between ‘20 and ‘16", main = "Percent Difference In Voter Turnout Based on Voting System ")
+abline(lm(diff.turnout~ballot.score, data=data))
+
+
+plot(model)
+summary(model)
+
+#Histogram of Residuals for Checking Model Assumptions 
+hist(model$residuals)
+
+```
+```{r}
+#Change in voter turnout regressed on COVID accommodations and all collected potential confounders
+
+model.2 <- lm(diff.turnout~ballot.score+turnout.20+turnout.16+spending.per.pupil.16+spending.per.pupil.20+id.score.16+id.score.20+diff.id.score+result.16.binary+result.20.binary+diff.result+diff.spending.per.pupil+polls.per.cap.2016+polls.per.cap.2018+diff.polls.per.cap, data=data)
+
+
+
+
+plot(model.2)
+summary(model.2)
+
+#Histogram of Residuals for Checking Model Assumptions 
+hist(model.2$residuals, breaks = 10)
+```
+
+```{r}
+#Change in voter turnout regressed on COVID accommodations and change (between 2016 ad 2020) for all collected potential confounders
+model.3 <- lm(diff.turnout~ballot.score+diff.id.score+diff.result+diff.spending.per.pupil+diff.polls.per.cap, data=data)
+plot(model.3)
+summary(model.3)
+
+#Histogram of Residuals for Checking Model Assumptions 
+hist(model.3$residuals, breaks = 10)
+```
+
